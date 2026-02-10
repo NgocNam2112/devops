@@ -100,21 +100,156 @@ kubectl apply -f namespace.yml
 
 ---
 
-## 3. Metrics Server
+## 3. Metrics Server (Updated - Production Knowledge)
 
-### Cài Metrics Server
+### Metrics Server la gi?
+
+Metrics Server la component trong Kubernetes dung de thu thap CPU va Memory usage cua Pods va Nodes.
+
+Metrics Server lay du lieu tu kubelet cua moi node va cung cap qua Kubernetes API.
+
+Kien truc:
+
+```text
+Pods / Nodes
+      |
+      v
+   Kubelet
+      |
+      v
+Metrics Server
+      |
+      v
+Kubernetes API
+      |
+      v
+kubectl top / HPA
+```
+
+### Neu khong co Metrics Server
+
+Các lệnh sau khong hoat dong:
+
+```bash
+kubectl top pod
+kubectl top nodes
+```
+
+Error thuong gap:
+
+```text
+error: Metrics API not available
+```
+
+### Tai sao production cluster can Metrics Server?
+
+1️⃣ Monitoring resource usage
+
+DevOps can biet:
+
+* Pod nao dung CPU cao
+* Pod nao dung Memory cao
+* Node nao dang qua tai
+
+Vi du:
+
+```bash
+kubectl top pods
+```
+
+Output:
+
+```text
+NAME              CPU(cores)   MEMORY(bytes)
+api-gateway       120m         210Mi
+user-service      80m          140Mi
+```
+
+2️⃣ Horizontal Pod Autoscaler (HPA)
+
+Autoscaling phu thuoc Metrics Server.
+
+Vi du:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+Flow:
+
+```text
+Traffic tang
+   ↓
+CPU usage tang
+   ↓
+Metrics Server detect
+   ↓
+HPA scale Pods
+```
+
+3️⃣ Capacity planning
+
+Metrics giup:
+
+* xac dinh Pod can bao nhieu CPU
+* dieu chinh resource limits
+* xac dinh khi nao can them node
+
+### Cai Metrics Server
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
----
-
-### Lấy APIService liên quan đến metrics
+### Kiem tra Metrics Server
 
 ```bash
-kubectl get apiservice | grep metrics
+kubectl get pods -n kube-system
 ```
+
+Expected:
+
+```text
+metrics-server-xxxxx Running
+```
+
+### Kiem tra metrics
+
+```bash
+kubectl top nodes
+kubectl top pods
+```
+
+### Metrics Server vs Prometheus
+
+| Tool | Purpose |
+| ---- | ------- |
+| Metrics Server | real-time CPU / Memory |
+| Prometheus | metrics history |
+| Grafana | dashboard |
+
+Production stack:
+
+* Metrics Server -> Autoscaling
+* Prometheus -> Monitoring
+* Grafana -> Visualization
 
 ---
 
@@ -237,131 +372,569 @@ kubectl describe pod nginx-resources
 
 ---
 
-## 7. ConfigMap
+## 7. ConfigMap (Updated - Production Usage)
 
-### Tạo ConfigMap từ file
+### 1. What ConfigMap Is (Real Meaning)
 
-```bash
-kubectl create cm dem-heroes --from-file=heroes.txt
+A ConfigMap is used to store non-sensitive configuration data.
+
+Examples:
+
+* application environment variables
+* feature flags
+* config files
+* service URLs
+* log levels
+* application settings
+
+Example real backend config:
+
+```text
+NODE_ENV=production
+DB_HOST=mysql
+REDIS_HOST=redis
+RABBITMQ_URL=amqp://rabbitmq
+LOG_LEVEL=info
 ```
 
----
+These should not be hardcoded in the container image.
 
-### ConfigMap manifest (`configmap.yml`)
+### 2. Real Architecture Example
+
+Typical production setup:
+
+```text
+Docker Image (NestJS App)
+        |
+        v
+Kubernetes Deployment
+        |
+        v
+   ConfigMap
+        |
+        v
+Environment variables inside container
+```
+
+Example:
+
+```text
+NestJS Container
+   |
+   |---- process.env.DB_HOST
+   |---- process.env.REDIS_HOST
+   |---- process.env.RABBITMQ_URL
+```
+
+All values come from ConfigMap.
+
+### 3. Example Real ConfigMap
+
+`configmap.yaml`
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dem-heroes
+  name: backend-config
 data:
-  heroes.txt: |
-    ironman
-    spiderman
-    thor
+  NODE_ENV: "production"
+  DB_HOST: "mysql-service"
+  REDIS_HOST: "redis-service"
+  RABBITMQ_URL: "amqp://rabbitmq-service"
+  LOG_LEVEL: "info"
 ```
 
 Apply:
 
 ```bash
-kubectl apply -f configmap.yml
+kubectl apply -f configmap.yaml
 ```
 
----
-
-### Lấy ConfigMap
+Check:
 
 ```bash
-kubectl get configmaps
+kubectl get configmap
 ```
 
----
+### 4. Using ConfigMap in Deployment (Most Common)
 
-### Describe ConfigMap
+`deployment.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: my-backend:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: backend-config
+```
+
+This loads all keys from ConfigMap into environment variables.
+
+Inside NestJS:
+
+* `process.env.DB_HOST`
+* `process.env.REDIS_HOST`
+
+### 5. Using Specific Keys (More Secure)
+
+Sometimes you want only specific variables.
+
+```yaml
+env:
+  - name: DB_HOST
+    valueFrom:
+      configMapKeyRef:
+        name: backend-config
+        key: DB_HOST
+```
+
+### 6. Using ConfigMap as File (Very Common)
+
+Many apps require config files, not environment variables.
+
+Example `config.yaml` in ConfigMap:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  config.yaml: |
+    logLevel: info
+    maxConnections: 100
+    featureFlags:
+      enableLogin: true
+```
+
+Mount as volume:
+
+```yaml
+containers:
+  - name: backend
+    image: my-backend
+    volumeMounts:
+      - name: config-volume
+        mountPath: /app/config
+
+volumes:
+  - name: config-volume
+    configMap:
+      name: app-config
+```
+
+Inside container:
+
+`/app/config/config.yaml`
+
+### 7. Real Production Example (Microservices)
+
+Example Nx NestJS microservices architecture.
+
+Services:
+
+* `auth-service`
+* `checkout-service`
+* `notification-service`
+
+Each service has its own ConfigMap.
+
+`auth-config`:
+
+```yaml
+data:
+  JWT_SECRET: "my-secret"
+  TOKEN_EXPIRE: "3600"
+  REDIS_HOST: "redis-service"
+```
+
+`checkout-config`:
+
+```yaml
+data:
+  PAYMENT_PROVIDER: "stripe"
+  RABBITMQ_URL: "amqp://rabbitmq-service"
+```
+
+`notification-config`:
+
+```yaml
+data:
+  SMTP_HOST: "smtp.gmail.com"
+  SMTP_PORT: "587"
+```
+
+### 8. Updating ConfigMap in Production
+
+Update config:
 
 ```bash
-kubectl describe cm dem-heroes
+kubectl edit configmap backend-config
 ```
 
----
+Pods will not automatically reload config.
 
-## 8. Logs
-
-Kubernetes cung cấp nhiều cách để xem log, đặc biệt quan trọng khi Pod có **nhiều containers**.
-
----
-
-### Xem logs của container cụ thể trong Pod
+You must restart deployment:
 
 ```bash
-kubectl logs counter -c countby3
+kubectl rollout restart deployment backend
 ```
 
-Giải thích:
+### 9. Best Practice in Real Systems
 
-* `counter` : tên Pod
-* `-c countby3` : chỉ định container cần xem log
+1️⃣ ConfigMap for non-secret data
 
-Dùng khi Pod có **nhiều containers**.
+* `DB_HOST`
+* `REDIS_HOST`
+* `LOG_LEVEL`
+* `SERVICE_URL`
+
+2️⃣ Secret for sensitive data
+
+* `DB_PASSWORD`
+* `JWT_SECRET`
+* `API_KEYS`
+
+Use `Secret` + `ConfigMap` together.
+
+3️⃣ Versioned ConfigMap
+
+Instead of updating one name repeatedly, use versioning:
+
+* `backend-config-v1`
+* `backend-config-v2`
+
+Then update deployment.
+
+4️⃣ Use Helm for ConfigMap
+
+In production Kubernetes systems, ConfigMaps are commonly managed by Helm charts.
+
+Example `values.yaml`:
+
+```yaml
+config:
+  redisHost: redis
+  logLevel: info
+```
+
+### 10. Real Flow in Production
+
+Production CI/CD pipeline:
+
+```text
+Developer changes config
+        |
+        v
+Git push
+        |
+        v
+CI/CD pipeline
+        |
+        v
+Update ConfigMap
+        |
+        v
+Rollout Deployment
+        |
+        v
+Pods restart with new config
+```
+
+### 11. Debugging ConfigMap
+
+Check ConfigMap:
+
+```bash
+kubectl get configmap backend-config -o yaml
+```
+
+Check inside container:
+
+```bash
+kubectl exec -it pod-name -- env
+```
+
+or
+
+```bash
+kubectl exec -it pod-name -- cat /app/config/config.yaml
+```
+
+### 12. Most Common Interview Answer (System Design)
+
+When asked: How do you manage configuration in Kubernetes?
+
+Answer:
+
+* Application configuration is stored in ConfigMaps
+* Secrets store sensitive credentials
+* Deployments inject these values as environment variables or mounted configuration files
+* CI/CD updates ConfigMaps and triggers rolling deployment
+
+### 13. Real World Example (Netflix Style)
+
+Large companies store the following in ConfigMaps:
+
+* feature flags
+* rate limits
+* service endpoints
+* logging configuration
+
+Production structure often follows Kustomize-style layout:
+
+```text
+k8s/
+ ├── base
+ │    ├── deployment.yaml
+ │    ├── service.yaml
+ │    ├── configmap.yaml
+ │    └── secret.yaml
+ │
+ └── overlays
+      ├── dev
+      ├── staging
+      └── production
+```
 
 ---
 
-### Xem logs của tất cả containers trong Pod
+## 8️⃣ Logs (Ví dụ CỤ THỂ từ Pod → Deployment → Service)
 
-```bash
-kubectl logs counter --all-containers
-```
-
-Kết quả sẽ bao gồm log của **mọi container** trong Pod.
+Phần này là **ví dụ thực hành end‑to‑end**, đi từ **tạo từng loại Pod** → **xem logs** → **hiểu sự khác nhau khi scale và expose Service**.
 
 ---
 
-### Follow logs (real-time)
+# 🧪 VÍ DỤ 1: Pod đơn (Single Pod)
+
+### 1️⃣ Tạo Pod
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-single-pod
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          i=0;
+          while true; do
+            echo "[Single Pod] count=$i $(date)";
+            i=$((i+1));
+            sleep 2;
+          done
+```
+
+Apply:
 
 ```bash
-kubectl logs -f counter -c countby3
+kubectl apply -f single-pod.yml
 ```
+
+### 2️⃣ Xem logs
+
+```bash
+kubectl logs log-single-pod
+kubectl logs -f log-single-pod
+```
+
+➡️ **Dễ nhất**, 1 Pod = 1 luồng log.
 
 ---
 
-### Xem logs container đã crash trước đó
+# 🧪 VÍ DỤ 2: Pod nhiều container
 
-```bash
-kubectl logs counter -c count --previous
+### 1️⃣ Tạo Pod multi-container
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-multi-pod
+spec:
+  containers:
+    - name: app-1
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - while true; do echo "[app-1] $(date)"; sleep 3; done
+    - name: app-2
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - while true; do echo "[app-2] $(date)"; sleep 5; done
 ```
 
-Rất hữu ích khi debug **CrashLoopBackOff**.
+### 2️⃣ Xem logs
+
+```bash
+kubectl logs log-multi-pod -c app-1
+kubectl logs log-multi-pod -c app-2
+kubectl logs log-multi-pod --all-containers
+```
+
+➡️ **Phải chỉ rõ container**, nếu không Kubernetes không biết lấy log nào.
 
 ---
 
-### Best Practices khi debug logs
+# 🧪 VÍ DỤ 3: Deployment (nhiều Pod)
 
-* Luôn xác định **Pod có bao nhiêu containers**
-* Dùng `-c` để tránh nhầm log
-* Khi gặp `CrashLoopBackOff`, luôn thử `--previous`
-* Kết hợp với `kubectl describe pod <pod>` để xem Events
+### 1️⃣ Tạo Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: log-demo
+  template:
+    metadata:
+      labels:
+        app: log-demo
+    spec:
+      containers:
+        - name: app
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Pod: $(hostname) started";
+              while true; do
+                echo "[$(hostname)] $(date)";
+                sleep 4;
+              done
+```
+
+Apply:
+
+```bash
+kubectl apply -f log-deploy.yml
+```
+
+### 2️⃣ Xem logs từng Pod
+
+```bash
+kubectl get pods -l app=log-demo
+kubectl logs <pod-name>
+```
+
+### 3️⃣ Xem logs TOÀN BỘ Deployment
+
+```bash
+kubectl logs -l app=log-demo
+```
+
+➡️ Đây là **cách phổ biến nhất khi debug Service**.
 
 ---
 
-### Xem logs Pod
+# 🧪 VÍ DỤ 4: Deployment + Service + Logs (load balancing)
 
-```bash
-kubectl logs demopod
+### 1️⃣ Service cho Deployment
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: log-service
+spec:
+  selector:
+    app: log-demo
+  ports:
+    - port: 80
+      targetPort: 80
 ```
 
-### Follow logs
+### 2️⃣ Gọi Service (port-forward)
 
 ```bash
-kubectl logs -f demopod
+kubectl port-forward svc/log-service 8080:80
+curl localhost:8080
 ```
 
-### Logs container cụ thể
+### 3️⃣ Quan sát logs
 
 ```bash
-kubectl logs demopod -c nginx
+kubectl logs -l app=log-demo
 ```
+
+➡️ Mỗi request có thể vào **Pod khác nhau**.
 
 ---
+
+# 🧪 VÍ DỤ 5: Pod restart & logs cũ
+
+### 1️⃣ Pod crash
+
+```yaml
+args:
+  - |
+    echo "starting";
+    sleep 5;
+    exit 1
+```
+
+### 2️⃣ Xem logs
+
+```bash
+kubectl logs <pod-name>
+kubectl logs <pod-name> --previous
+```
+
+➡️ `--previous` cực kỳ quan trọng khi debug CrashLoopBackOff.
+
+---
+
+# 🧠 TỔNG KẾT LOGS
+
+| Trường hợp      | Cách xem logs    |
+| --------------- | ---------------- |
+| Pod đơn         | kubectl logs pod |
+| Multi container | -c container     |
+| Deployment      | -l label         |
+| Service         | logs backend Pod |
+| Pod crash       | --previous       |
+
+> **Service KHÔNG có logs** – logs luôn nằm ở Pod / container.
+
+1. Pod có log không?
+2. Log có cập nhật khi request vào?
+3. Có Pod nào không nhận request?
+4. Pod nào lỗi liên tục?
+
+---
+
+## 🔑 Ghi nhớ
+
+* Logs = công cụ debug số 1
+* Kết hợp logs + labels để debug Service
+* Logs giúp bạn **thấy được load balancing thực sự**
 
 ## 9. Labels & Selectors
 
@@ -1257,91 +1830,208 @@ spec:
 
 ---
 
-# 1️⃣5️⃣ VÍ DỤ TỔNG HỢP TOÀN DIỆN (END-TO-END)
+# 1️⃣5️⃣ VÍ DỤ TỔNG HỢP TOÀN DIỆN (END-TO-END – REAL WORLD)
 
-Phần này **kết nối toàn bộ kiến thức đã học** thành **một hệ thống Kubernetes hoàn chỉnh**, giúp bạn có cái nhìn tổng quan từ đầu đến cuối.
+> 🎯 Mục tiêu phần này: **gom TOÀN BỘ kiến thức từ đầu tài liệu** thành **một hệ thống thực tế đúng kiểu production thu nhỏ**.
+> Backend được mô phỏng bằng **microservice NestJS (Nx monorepo)** – rất sát thực tế doanh nghiệp.
 
 ---
 
-## 🎯 Mục tiêu hệ thống
+## 🧠 Bài toán thực tế
 
-Chúng ta xây dựng hệ thống gồm:
+Chúng ta xây dựng một hệ thống gồm:
 
-* **Frontend (nginx)**
+* **Frontend**: Client (browser / curl)
+* **API Gateway**: NestJS (Nx) – public entry
+* **Backend Microservice**: NestJS (Nx)
+* **Database**: giả lập (busybox / db pod)
+* **Infrastructure**:
 
-  * Stateless
-  * Có thể scale
-  * Expose qua Service
-
-* **Backend / DB (ví dụ giả lập)**
-
-  * Không expose public
-  * Chỉ frontend được phép truy cập
-
-* **Security**
-
-  * NetworkPolicy kiểm soát traffic
+  * Deployment
+  * Service (ClusterIP + NodePort)
+  * Labels & Selectors
+  * Logs
+  * Persistent Volume
+  * NetworkPolicy
 
 ---
 
 ## 🧱 Kiến trúc tổng thể
 
 ```text
-User
+Client
+  │
+  │  NODE_IP:31234
+  ▼
+NodePort Service (api-gateway)
   │
   ▼
-Service (nginx-service)
-  │  Load Balance
+Deployment: api-gateway (NestJS)
+  │  ClusterIP Service
   ▼
-Deployment nginx (2 Pods)
-  │  (app=nginx)
-  ▼
-Service nội bộ
+Deployment: user-service (NestJS)
   │
   ▼
-DB Pods (role=db)
+DB Pod + PVC
 ```
 
 ---
 
-## 1️⃣ Namespace (tùy chọn nhưng khuyến khích)
+## 📦 1️⃣ Microservice structure (Nx – tư duy)
 
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: demo
+> **Không build Nx thật**, chỉ mô phỏng đúng cách deploy.
+
+```text
+nx-monorepo/
+├─ apps/
+│  ├─ api-gateway (NestJS)
+│  └─ user-service (NestJS)
 ```
+
+* `api-gateway`: nhận request từ client
+* `user-service`: xử lý nghiệp vụ
+
+---
+
+## 🐳 2️⃣ Container giả lập NestJS (log-based)
+
+Thay vì code thật, dùng image mô phỏng log:
 
 ```bash
-kubectl apply -f namespace.yml
+echo "API-GATEWAY handled request";
+echo "USER-SERVICE processed request";
+```
+
+➡️ Mục tiêu là **hiểu Kubernetes**, không phải code NestJS.
+
+---
+
+## 🚀 3️⃣ Deployment – API Gateway (public)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "[API-GATEWAY $(hostname)] $(date)";
+                sleep 5;
+              done
+          ports:
+            - containerPort: 3000
 ```
 
 ---
 
-## 2️⃣ Persistent Volume & PVC (cho DB)
+## 🌐 4️⃣ Service – NodePort (public entry)
 
 ```yaml
 apiVersion: v1
-kind: PersistentVolume
+kind: Service
 metadata:
-  name: db-pv
+  name: api-gateway-nodeport
 spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /mnt/data/db
+  type: NodePort
+  selector:
+    app: api-gateway
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 31234
 ```
+
+➡️ Client gọi:
+
+```bash
+curl NODE_IP:31234
+```
+
+---
+
+## 🧩 5️⃣ Deployment – User Service (internal)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  labels:
+    app: user-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+        - name: user
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "[USER-SERVICE $(hostname)] $(date)";
+                sleep 6;
+              done
+          ports:
+            - containerPort: 3001
+```
+
+---
+
+## 🔗 6️⃣ Service – ClusterIP (internal only)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+spec:
+  type: ClusterIP
+  selector:
+    app: user-service
+  ports:
+    - port: 3001
+      targetPort: 3001
+```
+
+➡️ `api-gateway` gọi `user-service` qua DNS:
+
+```text
+http://user-service:3001
+```
+
+---
+
+## 💾 7️⃣ Database Pod + Persistent Volume
 
 ```yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: db-pvc
-  namespace: demo
 spec:
   accessModes:
     - ReadWriteOnce
@@ -1350,122 +2040,40 @@ spec:
       storage: 1Gi
 ```
 
----
-
-## 3️⃣ Deployment – Frontend (nginx)
-
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
-  name: nginx-deployment
-  namespace: demo
-  labels:
-    app: nginx
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:1.18
-          ports:
-            - containerPort: 80
-```
-
----
-
-## 4️⃣ Deployment – Backend / DB (ví dụ)
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: db-deployment
-  namespace: demo
+  name: db-pod
   labels:
     role: db
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      role: db
-  template:
-    metadata:
-      labels:
-        role: db
-    spec:
-      containers:
-        - name: db
-          image: busybox
-          command: ["/bin/sh", "-c", "sleep 3600"]
-          volumeMounts:
-            - name: db-storage
-              mountPath: /data
-      volumes:
+  containers:
+    - name: db
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - sleep 3600
+      volumeMounts:
         - name: db-storage
-          persistentVolumeClaim:
-            claimName: db-pvc
+          mountPath: /data
+  volumes:
+    - name: db-storage
+      persistentVolumeClaim:
+        claimName: db-pvc
 ```
 
 ---
 
-## 5️⃣ Services
+## 🔐 8️⃣ NetworkPolicy – Zero Trust
 
-### 5.1 Service cho nginx (public)
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-service
-  namespace: demo
-spec:
-  type: ClusterIP
-  selector:
-    app: nginx
-  ports:
-    - port: 80
-      targetPort: 80
-```
-
----
-
-### 5.2 Service cho DB (internal only)
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: db-service
-  namespace: demo
-spec:
-  type: ClusterIP
-  selector:
-    role: db
-  ports:
-    - port: 3306
-      targetPort: 3306
-```
-
----
-
-## 6️⃣ NetworkPolicy – bảo mật hệ thống
-
-### 6.1 Deny all DB traffic
+### 8.1 Deny all DB traffic
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: db-deny-all
-  namespace: demo
 spec:
   podSelector:
     matchLabels:
@@ -1474,186 +2082,64 @@ spec:
     - Ingress
 ```
 
----
-
-### 6.2 Cho phép nginx truy cập DB
+### 8.2 Allow user-service → DB
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: db-allow-nginx
-  namespace: demo
+  name: db-allow-user
 spec:
   podSelector:
     matchLabels:
       role: db
-  policyTypes:
-    - Ingress
   ingress:
     - from:
         - podSelector:
             matchLabels:
-              app: nginx
+              app: user-service
 ```
 
 ---
 
-## 7️⃣ Luồng traffic cuối cùng
-
-```text
-User → nginx-service → nginx Pods → db-service → db Pod
-```
-
-* Service đảm nhiệm routing
-* Labels quyết định ai là backend
-* NetworkPolicy quyết định ai được phép nói chuyện
-
----
-
-## 8️⃣ Checklist debug hệ thống
+## 📜 9️⃣ Logs – Debug toàn hệ thống
 
 ```bash
-kubectl get pods -n demo --show-labels
-kubectl get svc -n demo
-kubectl get endpoints -n demo
-kubectl describe networkpolicy -n demo
-kubectl logs <pod>
+kubectl logs -l app=api-gateway
+kubectl logs -l app=user-service
+kubectl logs db-pod
 ```
+
+➡️ Bạn thấy:
+
+* Request vào API Gateway
+* Gateway gọi User Service
+* DB tồn tại data
 
 ---
 
-## 🧠 Tổng kết cuối cùng
+## 🔎 🔟 Checklist debug thực tế
 
-* Kubernetes là **hệ sinh thái các resource kết nối bằng labels**
-* Deployment → Pod lifecycle
-* Service → stable networking
-* NetworkPolicy → zero-trust security
-* PVC → data persistence
-
-> Nếu bạn hiểu được ví dụ này, bạn đã **nắm được 70–80% nền tảng Kubernetes thực tế**.
-
----
-
-## 11. Secret & Environment Variables
-
-* Không dùng `hostPath` cho production
-* Production dùng:
-
-  * AWS EBS / EFS
-  * GCP Persistent Disk
-  * NFS / Ceph
-* Mỗi DB nên có PVC riêng
-* Backup data định kỳ
+1. Pod running?
+2. Labels đúng?
+3. Service selector match?
+4. Endpoints có backend?
+5. NodePort mở đúng?
+6. NetworkPolicy block?
+7. Logs phản ánh đúng flow?
 
 ---
 
-## 11. Secret & Environment Variables
+## 🧠 TỔNG KẾT CUỐI CÙNG
 
-Phần này minh họa cách **inject Secret vào Pod thông qua biến môi trường** và kiểm tra Secret có hoạt động hay không.
+| Thành phần    | Vai trò             |
+| ------------- | ------------------- |
+| Deployment    | Lifecycle & scaling |
+| Service       | Networking ổn định  |
+| NodePort      | Public entry        |
+| kube-proxy    | Load balancing      |
+| Logs          | Debug sự thật       |
+| PVC           | Data persistence    |
+| NetworkPolicy | Security            |
 
----
-
-### Pod sử dụng Secret (`mysql-pod.yml`)
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mysql-locked
-spec:
-  containers:
-    - name: mysql
-      image: mysql:8.0
-      env:
-        - name: MYSQL_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mysql-secret
-              key: password
-```
-
-Apply:
-
-```bash
-kubectl apply -f mysql-pod.yml
-```
-
----
-
-### Secret manifest (`secret.yml`)
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mysql-secret
-type: kubernetes.io/basic-auth
-stringData:
-  password: alta3
-```
-
-Apply:
-
-```bash
-kubectl apply -f secret.yml
-```
-
----
-
-### Kiểm tra Pod chạy thành công
-
-```bash
-kubectl get pods
-```
-
-Expected:
-
-```
-mysql-locked   1/1   Running
-```
-
----
-
-### Exec vào Pod và kiểm tra biến môi trường
-
-```bash
-kubectl exec -it mysql-locked -- bash
-```
-
-Bên trong container:
-
-```bash
-echo $MYSQL_ROOT_PASSWORD
-```
-
-Expected output:
-
-```
-alta3
-```
-
----
-
-### Ghi chú bảo mật (Important)
-
-* Không commit file `secret.yml` thật lên Git
-* `stringData` chỉ tiện cho demo / học tập
-* Production nên dùng:
-
-  * External Secret Manager (AWS Secrets Manager, Vault, GCP Secret Manager)
-  * Hoặc CI/CD inject secret
-
----
-
-## Tổng kết
-
-* Pod là ephemeral & stateless
-* YAML giúp tái sử dụng và quản lý hạ tầng
-* `kubectl run` phù hợp test nhanh
-* ConfigMap dùng cho config, **không** dùng cho secrets
-
----
-
-🚀 Happy Kubernetes hacking!
-
+> ✅ Nếu bạn hiểu và tự triển khai được ví dụ này, bạn đã **nắm vững nền tảng Kubernetes thực tế trong môi trường microservices**.
