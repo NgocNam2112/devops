@@ -150,6 +150,21 @@ Whether a subnet behaves like a public or private subnet depends mainly on:
 
 This is one of the most important VPC concepts to understand correctly.[^6][^7]
 
+### Common interview question
+
+**Question:** When I create a subnet manually, is that subnet public by default?
+
+**Answer:** **No.** Creating a subnet does **not** automatically make it public. A subnet becomes public only when its associated route table contains a default route such as `0.0.0.0/0` pointing to an **Internet Gateway**, and the resources inside it also have the required public connectivity settings, such as a public IP address when direct internet access is needed.
+
+So the correct way to think about it is:
+
+- **Creating a subnet** only creates a network segment inside the VPC
+- **Associating a route table** decides where traffic from that subnet can go
+- **Connecting that route table to an Internet Gateway** is what makes internet routing possible
+- **Giving an instance a public IP** is what allows that specific instance to be directly reachable from the internet
+
+In other words, a subnet is not public because of how it is created. It becomes public because of how it is **routed**.
+
 ---
 
 ## 6. Route Tables
